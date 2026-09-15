@@ -39,7 +39,9 @@ export function useProject(id: string | null) {
   const statusQuery = useQuery({
     queryKey: ['project-status', id],
     queryFn: () => (id ? projectsApi.getStatus(id) : Promise.reject('No project ID')),
-    enabled: !!id && ['pending', 'processing', 'fetching', 'embedding', 'failed'].includes(projectQuery.data?.status ?? ''),
+    // Fetch once for completed projects too, so the UI can expose post-processing
+    // problems such as an incomplete embeddings index.
+    enabled: !!id && ['pending', 'processing', 'fetching', 'embedding', 'failed', 'completed'].includes(projectQuery.data?.status ?? ''),
     refetchInterval: (query) => {
       const stage = query.state.data?.stage
       return stage !== 'complete' && stage !== 'failed' ? 2000 : false

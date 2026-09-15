@@ -97,6 +97,8 @@ export default function ProjectPage() {
       await projectsApi.retryAll(projectId)
       queryClient.invalidateQueries({ queryKey: ['project', projectId] })
       queryClient.invalidateQueries({ queryKey: ['project-videos', projectId] })
+      queryClient.invalidateQueries({ queryKey: ['project-status', projectId] })
+      setErrorBannerDismissed(false)
       setProcessingStatus(null)
     } catch {
       setRetrying(false)
@@ -130,6 +132,38 @@ export default function ProjectPage() {
   const failedVideos = (videos || []).filter((video) => video.status === 'failed')
   const completedVideos = (videos || []).filter((video) => video.status === 'completed')
   const hasFailedVideos = failedVideos.length > 0
+  const embeddingCount = status?.embedding_count ?? 0
+  const embeddingTotal = status?.embedding_total ?? 0
+  const hasEmbeddingErrorMessage = Boolean(
+    project?.error_message &&
+    project.error_message.startsWith('Embedding:') &&
+    !project.error_message.startsWith('Embedding: OK.')
+  )
+  const hasEmbeddingIssue = Boolean(status?.embedding_error) ||
+    hasEmbeddingErrorMessage ||
+    (isCompleted && embeddingTotal > 0 && embeddingCount < embeddingTotal)
+  const hasProcessingIssue = hasEmbeddingIssue || Boolean(project?.error_message)
+  const canRetry = hasFailedVideos || hasProcessingIssue
+  const retryActionLabel = hasEmbeddingIssue && hasFailedVideos
+    ? 'Retry processing'
+    : hasEmbeddingIssue
+      ? 'Retry embeddings'
+      : hasFailedVideos
+        ? 'Retry failed'
+        : 'Retry processing'
+  const issueTitle = hasEmbeddingIssue
+    ? 'Embedding index incomplete'
+    : hasFailedVideos
+      ? 'Some videos failed'
+      : 'Processing finished with warnings'
+  const issueDescription = hasEmbeddingIssue
+    ? `The search index contains ${embeddingCount} of ${embeddingTotal || 'the available'} transcript chunks. Regenerate it to restore transcript search and citations.`
+    : hasFailedVideos
+      ? completedVideos.length > 0
+        ? `${failedVideos.length} video${failedVideos.length !== 1 ? 's' : ''} failed, ${completedVideos.length} completed. You can review the completed content or retry the failures.`
+        : `All ${failedVideos.length} videos failed to process. Check the errors and try again.`
+      : 'The project finished, but one processing stage reported an error. You can retry the processing pipeline.'
+  const technicalError = project?.error_message || status?.embedding_error
 
   // Project initials / avatar
   const projectInitials = project?.name
@@ -206,12 +240,12 @@ export default function ProjectPage() {
               <button
                 type="button"
                 onClick={handleRetry}
-                disabled={retrying || !hasFailedVideos}
-                title="Retry failed videos"
+                disabled={retrying || !canRetry}
+                title={retryActionLabel}
                 className="flex-1 rounded-lg border border-gray-200 py-2 text-xs text-gray-500 transition-colors hover:text-gray-800 disabled:opacity-40"
               >
                 <RefreshCw className={cn('mr-1 inline h-3 w-3', retrying && 'animate-spin')} />
-                Retry failed
+                {retryActionLabel}
               </button>
               <button
                 type="button"
@@ -244,22 +278,38 @@ export default function ProjectPage() {
               </div>
             )}
 
-            {hasFailedVideos && !errorBannerDismissed && (
-              <div className="mx-6 mt-5 rounded-xl border border-red-200 bg-red-50 p-4">
+            {(hasFailedVideos || hasProcessingIssue) && !errorBannerDismissed && (
+              <div className={cn(
+                'mx-6 mt-5 rounded-xl p-4',
+                hasFailedVideos ? 'border border-red-200 bg-red-50' : 'border border-amber-200 bg-amber-50'
+              )}>
                 <div className="flex items-start gap-3">
-                  <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-red-500" />
+                  <AlertTriangle className={cn(
+                    'mt-0.5 h-4 w-4 flex-shrink-0',
+                    hasFailedVideos ? 'text-red-500' : 'text-amber-500'
+                  )} />
                   <div className="min-w-0 flex-1">
-                    <h3 className="text-sm font-semibold text-red-700">Some videos failed</h3>
-                    <p className="mt-0.5 text-sm text-red-600/80">
-                      {completedVideos.length > 0
-                        ? `${failedVideos.length} video${failedVideos.length !== 1 ? 's' : ''} failed, ${completedVideos.length} completed. You can review the completed content or retry the failures.`
-                        : `All ${failedVideos.length} videos failed to process. Check the errors and try again.`}
+                    <h3 className={cn(
+                      'text-sm font-semibold',
+                      hasFailedVideos ? 'text-red-700' : 'text-amber-800'
+                    )}>{issueTitle}</h3>
+                    <p className={cn(
+                      'mt-0.5 text-sm',
+                      hasFailedVideos ? 'text-red-600/80' : 'text-amber-700/90'
+                    )}>
+                      {issueDescription}
                     </p>
-                    {project?.error_message && (
+                    {technicalError && (
                       <details className="mt-2">
-                        <summary className="cursor-pointer text-xs text-red-500">Technical details</summary>
-                        <pre className="mt-1 whitespace-pre-wrap break-all rounded bg-red-100 p-2 text-xs text-red-400">
-                          {project.error_message}
+                        <summary className={cn(
+                          'cursor-pointer text-xs',
+                          hasFailedVideos ? 'text-red-500' : 'text-amber-700'
+                        )}>Technical details</summary>
+                        <pre className={cn(
+                          'mt-1 whitespace-pre-wrap break-all rounded p-2 text-xs',
+                          hasFailedVideos ? 'bg-red-100 text-red-400' : 'bg-amber-100 text-amber-700'
+                        )}>
+                          {technicalError}
                         </pre>
                       </details>
                     )}
@@ -268,7 +318,12 @@ export default function ProjectPage() {
                         type="button"
                         onClick={handleRetry}
                         disabled={retrying}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 px-3 py-1.5 text-sm font-medium text-red-700 transition-colors hover:bg-red-100 disabled:opacity-50"
+                        className={cn(
+                          'inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors disabled:opacity-50',
+                          hasFailedVideos
+                            ? 'border-red-300 text-red-700 hover:bg-red-100'
+                            : 'border-amber-300 text-amber-800 hover:bg-amber-100'
+                        )}
                       >
                         {retrying ? (
                           <>
@@ -278,7 +333,7 @@ export default function ProjectPage() {
                         ) : (
                           <>
                             <RefreshCw className="h-3 w-3" />
-                            Retry failed videos
+                            {retryActionLabel}
                           </>
                         )}
                       </button>
@@ -287,7 +342,10 @@ export default function ProjectPage() {
                   <button
                     type="button"
                     onClick={() => setErrorBannerDismissed(true)}
-                    className="flex-shrink-0 text-red-400 hover:text-red-600"
+                    className={cn(
+                      'flex-shrink-0',
+                      hasFailedVideos ? 'text-red-400 hover:text-red-600' : 'text-amber-500 hover:text-amber-700'
+                    )}
                   >
                     <X className="h-4 w-4" />
                   </button>

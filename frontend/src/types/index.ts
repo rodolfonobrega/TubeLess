@@ -128,6 +128,9 @@ export interface ProcessingStatus {
   failed_count: number
   overall_progress: number
   video_states: VideoState[]
+  embedding_count: number
+  embedding_total: number
+  embedding_error?: string | null
 }
 
 export type ProcessingStage =

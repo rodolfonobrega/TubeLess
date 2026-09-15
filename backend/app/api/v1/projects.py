@@ -7,11 +7,14 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_session
+from app.models.orm.embedding import Embedding
 from app.models.orm.project import Project
+from app.models.orm.transcript import Transcript
+from app.models.orm.transcript_chunk import TranscriptChunk
 from app.models.orm.video import Video
 from app.repositories.consolidated_summary_repository import ConsolidatedSummaryRepository
 from app.repositories.project_repository import ProjectRepository
@@ -263,6 +266,9 @@ class ProcessingStatusResponse(BaseModel):
     failed_count: int = 0
     overall_progress: float = 0.0
     video_states: list[dict] = Field(default_factory=list)
+    embedding_count: int = 0
+    embedding_total: int = 0
+    embedding_error: str | None = None
 
 
 class ConsolidatedSynthesisResponse(BaseModel):
@@ -420,6 +426,7 @@ async def retry_project(
             v.status = "pending"
             v.error_message = None
     project.status = "processing"
+    project.error_message = None
 
     # Capture response BEFORE commit — commit expires ORM attributes,
     # and lazy-loading them back in an async context hits MissingGreenlet.
@@ -486,6 +493,36 @@ async def get_project_status(
     processing_count = sum(1 for v in videos if v.status == "processing")
     queued_count = sum(1 for v in videos if v.status == "pending")
     failed_count = sum(1 for v in videos if v.status == "failed")
+
+    embedding_count = 0
+    embedding_total = 0
+    try:
+        embedding_result = await session.execute(
+            select(
+                func.count(func.distinct(TranscriptChunk.id)),
+                func.count(func.distinct(Embedding.chunk_id)),
+            )
+            .join(Transcript, Transcript.id == TranscriptChunk.transcript_id)
+            .join(Video, Video.id == Transcript.video_id)
+            .outerjoin(Embedding, Embedding.chunk_id == TranscriptChunk.id)
+            .where(Video.project_id == project_uuid)
+        )
+        embedding_row = embedding_result.one()
+        embedding_total = embedding_row[0] if isinstance(embedding_row[0], int) else 0
+        embedding_count = embedding_row[1] if isinstance(embedding_row[1], int) else 0
+    except Exception as e:
+        logger.warning("Could not inspect embedding progress for project %s: %s", project_id, e)
+
+    embedding_error = None
+    if project.error_message:
+        embedding_message = project.error_message.split(" Consolidation:", 1)[0].strip()
+        if embedding_message and embedding_message != "Embedding: OK.":
+            embedding_error = embedding_message.removeprefix("Embedding:").strip()
+
+    if project.status == "completed" and embedding_total > embedding_count:
+        embedding_error = (
+            f"Embedding index is incomplete ({embedding_count}/{embedding_total} transcript chunks)."
+        )
 
     # Auto-correct project status based on actual video states.
     # Handles: stuck processing, orchestrator crash after videos done, etc.
@@ -573,6 +610,9 @@ async def get_project_status(
         failed_count=failed_count,
         overall_progress=overall_progress,
         video_states=video_states,
+        embedding_count=embedding_count,
+        embedding_total=embedding_total,
+        embedding_error=embedding_error,
     )
 
 
