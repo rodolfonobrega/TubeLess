@@ -23,6 +23,7 @@ services:
     container_name: tubeless_backend
     command: sh -c "python scripts/setup_db.py && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     environment:
+      TUBELESS_RUNTIME: docker
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-tubeless}
       DATABASE_URL_SYNC: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-tubeless}
       DEFAULT_MODEL: ${DEFAULT_MODEL:-gpt-4o-mini}
@@ -52,10 +53,11 @@ services:
       dockerfile: Dockerfile
     container_name: tubeless_frontend
     environment:
-      # The frontend server proxies /api requests from inside this container.
-      # localhost would point back to the frontend container, so always use
-      # the backend service name for the internal connection.
-      NEXT_PUBLIC_API_URL: http://backend:8000
+      TUBELESS_RUNTIME: docker
+      # Used by the server-side /api proxy. Keep this separate from the
+      # browser-facing URL so a host .env cannot route Docker to localhost.
+      INTERNAL_BACKEND_URL: http://backend:8000
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
       NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:8000}
     ports:
       - "3000:3000"

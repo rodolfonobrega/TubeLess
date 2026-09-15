@@ -1,6 +1,7 @@
 """Main FastAPI application."""
 
 import os as _os
+import logging
 from pathlib import Path as _Path
 
 # Load .env into os.environ so LiteLLM and other libs pick up API keys
@@ -12,6 +13,7 @@ except ImportError:
 
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,12 +27,45 @@ from app.core.websocket import manager
 
 settings = get_settings()
 configure_logging(debug=settings.debug)
+logger = logging.getLogger(__name__)
+
+
+def _runtime_name() -> str:
+    """Return the configured runtime, falling back to Docker detection."""
+    configured = _os.environ.get("TUBELESS_RUNTIME")
+    if configured:
+        return configured.lower()
+    return "docker" if _Path("/.dockerenv").exists() else "local"
+
+
+def _warn_on_runtime_mismatch() -> None:
+    """Warn when a database hostname belongs to the other runtime."""
+    runtime = _runtime_name()
+    database_host = urlparse(settings.database_url).hostname
+    if not database_host:
+        return
+
+    local_hosts = {"localhost", "127.0.0.1", "::1"}
+    docker_hosts = {"postgres", "tubeless_db", "ytless-postgres"}
+    if runtime == "docker" and database_host in local_hosts:
+        logger.warning(
+            "Configuration warning: Docker backend is using database host %r. "
+            "Use the PostgreSQL service name (usually 'postgres').",
+            database_host,
+        )
+    elif runtime != "docker" and database_host in docker_hosts:
+        logger.warning(
+            "Configuration warning: local backend is using Docker database host %r. "
+            "Use 127.0.0.1 when PostgreSQL is exposed on the host.",
+            database_host,
+        )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan manager."""
     # Startup
+    _warn_on_runtime_mismatch()
     await init_db()
 
     # Warm the effective-settings cache so _eff() works without a prior GET /settings

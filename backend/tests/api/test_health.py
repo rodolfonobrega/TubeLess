@@ -29,3 +29,20 @@ class TestHealthEndpoints:
     def test_openapi_docs_accessible(self, client):
         response = client.get("/docs")
         assert response.status_code == 200
+
+
+class TestRuntimeConfigurationWarnings:
+    def test_warns_when_local_backend_uses_docker_database_host(self, monkeypatch, caplog):
+        from app import main
+
+        monkeypatch.setenv("TUBELESS_RUNTIME", "local")
+        monkeypatch.setattr(
+            main.settings,
+            "database_url",
+            "postgresql+asyncpg://postgres:postgres@postgres:5432/tubeless",
+        )
+
+        with caplog.at_level("WARNING", logger="app.main"):
+            main._warn_on_runtime_mismatch()
+
+        assert "local backend is using Docker database host" in caplog.text

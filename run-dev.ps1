@@ -17,7 +17,7 @@ Write-Host "`n[1/4] Starting Postgres..." -ForegroundColor Green
 $pgContainer = docker ps --filter "name=ytless-postgres" --format "{{.Names}}"
 if (-not $pgContainer) {
     docker run -d --name ytless-postgres `
-        -e POSTGRES_DB=youtube_knowledge `
+        -e POSTGRES_DB=tubeless `
         -e POSTGRES_USER=postgres `
         -e POSTGRES_PASSWORD=postgres `
         -p 5432:5432 `
@@ -26,7 +26,22 @@ if (-not $pgContainer) {
     Start-Sleep -Seconds 3
 } else {
     Write-Host "    Postgres container already running."
+    $pgDatabase = docker inspect $pgContainer --format "{{range .Config.Env}}{{println .}}{{end}}" |
+        Select-String "^POSTGRES_DB="
+    if ($pgDatabase -and $pgDatabase.Line -ne "POSTGRES_DB=tubeless") {
+        Write-Warning "The existing $pgContainer container uses $($pgDatabase.Line). The local setup expects POSTGRES_DB=tubeless. Recreate that container if migrations fail."
+    }
 }
+
+# This script runs the backend and frontend on the host. Keep all host-facing
+# URLs explicit so a Docker-oriented .env cannot make the local proxy point at
+# the Docker service name.
+$env:TUBELESS_RUNTIME = "local"
+$env:INTERNAL_BACKEND_URL = "http://127.0.0.1:8000"
+$env:NEXT_PUBLIC_API_URL = "http://127.0.0.1:8000"
+$env:NEXT_PUBLIC_WS_URL = "ws://127.0.0.1:8000"
+$env:DATABASE_URL = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/tubeless"
+$env:DATABASE_URL_SYNC = "postgresql://postgres:postgres@127.0.0.1:5432/tubeless"
 
 # 2. Install / update backend deps
 Write-Host "`n[2/4] Checking backend dependencies..." -ForegroundColor Green

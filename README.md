@@ -129,6 +129,34 @@ docker compose exec backend alembic upgrade head
 - Backend API: http://localhost:8000
 - API Docs (Swagger): http://localhost:8000/docs
 
+### Docker and local execution
+
+The recommended deployment is Docker Compose. After copying `.env.example` to
+`.env`, run `docker compose up --build`; no URL changes are needed. Compose
+uses `http://backend:8000` for the frontend's server-side proxy and keeps
+`http://localhost:8000` as the host-facing address.
+
+For host-based development, use `.\run-dev.ps1` on Windows PowerShell 7+.
+It runs PostgreSQL in Docker and starts the backend and frontend on the host,
+using `127.0.0.1` for all local connections. Do not run `run-dev.ps1` and
+`docker compose up` at the same time because both modes use ports 3000, 5432,
+and 8000.
+
+If starting the services manually, use these host values for the local mode:
+
+```text
+TUBELESS_RUNTIME=local
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/tubeless
+DATABASE_URL_SYNC=postgresql://postgres:postgres@127.0.0.1:5432/tubeless
+INTERNAL_BACKEND_URL=http://127.0.0.1:8000
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
+NEXT_PUBLIC_WS_URL=ws://127.0.0.1:8000
+```
+
+The backend and frontend print a configuration warning at startup if a local
+process is configured with Docker-only hostnames such as `backend` or
+`postgres`, or if a Docker container is configured with `localhost`.
+
 ---
 
 ## LLM Configuration
@@ -248,6 +276,10 @@ It will:
 3. Seed test data if `backend/scripts/seed_test_data.py` exists.
 4. Launch the backend (`uvicorn --reload`) and the frontend (`npm run dev`) in separate windows.
 
+The script configures the local database as `tubeless` and explicitly sets
+the host URLs, so the root `.env` can safely remain configured for either
+workflow.
+
 ### Manual setup
 
 #### Backend
@@ -258,6 +290,11 @@ poetry install
 alembic upgrade head
 uvicorn app.main:app --reload
 ```
+
+For manual local execution, make sure PostgreSQL is exposed on the host and
+set `DATABASE_URL` and `DATABASE_URL_SYNC` to use `127.0.0.1` (see the values
+above). Docker service names such as `postgres` and `backend` are only
+available inside the Compose network.
 
 #### Frontend
 
