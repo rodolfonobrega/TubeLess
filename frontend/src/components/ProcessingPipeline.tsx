@@ -23,7 +23,7 @@ interface ProcessingPipelineProps {
 
 const stages: { key: ProcessingStage; label: string; description: string }[] = [
   { key: 'initializing', label: 'Queued', description: 'Waiting for the pipeline to start.' },
-  { key: 'downloading_transcripts', label: 'Fetching transcripts', description: 'Downloading captions or reading them from the player.' },
+  { key: 'downloading_transcripts', label: 'Processing videos', description: 'Downloading captions, reading transcripts, and generating summaries.' },
   { key: 'generating_summaries', label: 'Summarizing', description: 'Generating per-video summaries in the background.' },
   { key: 'synthesizing', label: 'Embedding + synthesis', description: 'Building embeddings and the consolidated synthesis.' },
 ]
@@ -52,6 +52,7 @@ export function ProcessingPipeline({
         : 0
   const activeVideos = videoStates.filter((video) => video.status === 'processing')
   const queuedVideos = videoStates.filter((video) => video.status === 'pending')
+  const completedVideos = videoStates.filter((video) => video.status === 'completed')
   const headlineLabel =
     currentStage === 'complete'
       ? 'Complete'
@@ -127,7 +128,7 @@ export function ProcessingPipeline({
                 </div>
                 <div className="min-w-0">
                   <div className="truncate text-sm font-medium text-gray-900">{video.title}</div>
-                  <div className="text-xs text-gray-500">Downloading or summarizing now</div>
+                  <div className="text-xs text-gray-500">Downloading transcript or generating summary</div>
                 </div>
               </div>
             ))}
@@ -152,6 +153,35 @@ export function ProcessingPipeline({
                 <div className="min-w-0">
                   <div className="truncate text-sm font-medium text-gray-900">{video.title}</div>
                   <div className="text-xs text-gray-500">Waiting to start</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {completedVideos.length > 0 && (
+        <div className="space-y-2 rounded-xl border border-emerald-100 bg-emerald-50/60 p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
+              Completed videos
+            </div>
+            <span className="text-xs font-medium text-emerald-700">
+              {completedVideos.length} ready
+            </span>
+          </div>
+          <div className="grid max-h-64 gap-2 overflow-y-auto sm:grid-cols-2">
+            {completedVideos.map((video) => (
+              <div
+                key={video.video_id}
+                className="flex items-center gap-3 rounded-lg border border-emerald-100 bg-white px-3 py-2"
+              >
+                <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
+                  <Check className="h-4 w-4" />
+                </div>
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium text-gray-900">{video.title}</div>
+                  <div className="text-xs text-emerald-700">Ready</div>
                 </div>
               </div>
             ))}

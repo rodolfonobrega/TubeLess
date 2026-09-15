@@ -168,6 +168,10 @@ class ProcessingOrchestrator:
 
                         await self.session.flush()
 
+                        # Persist each result before broadcasting it so the HTTP
+                        # status endpoint can show completed videos immediately.
+                        await self.session.commit()
+
                         await self._send_update(project_id, {
                             "type": "status_update",
                             "project_id": str(project_id),
@@ -302,6 +306,10 @@ class ProcessingOrchestrator:
                                 failed_errors.append(f"{video.youtube_video_id}: {err_msg[:200]}")
 
                             await self.session.flush()
+
+                            # Persist each result before broadcasting it so the HTTP
+                            # status endpoint can show completed videos immediately.
+                            await self.session.commit()
 
                             await self._send_update(project_id, {
                                 "type": "status_update",

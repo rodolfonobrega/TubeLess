@@ -46,6 +46,8 @@ services:
         condition: service_healthy
     volumes:
       - ./backend:/app
+      # Keep host-generated pytest cache out of Uvicorn's reload watcher.
+      - /app/.pytest_cache
 
   frontend:
     build:
