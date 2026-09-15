@@ -184,8 +184,42 @@ function NewProjectPageContent() {
               </button>
             )}
             {isSearching && <Loader2 className="h-4 w-4 text-gray-400 animate-spin mr-3" />}
+            <button
+              type="submit"
+              disabled={!searchQuery.trim() || isSearching}
+              className="mr-1.5 rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Search
+            </button>
           </div>
         </form>
+
+        <div className="mb-5 flex items-center gap-2">
+          <span className="text-xs text-gray-500">Search mode:</span>
+          <div className="flex gap-0.5 rounded-md bg-gray-100 p-0.5">
+            {(['smart', 'direct'] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                aria-pressed={searchMode === mode}
+                onClick={() => setSearchMode(mode)}
+                className={`rounded px-2.5 py-1 text-xs font-medium capitalize transition-colors
+                  ${searchMode === mode ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+              >
+                {mode}
+              </button>
+            ))}
+          </div>
+          <span className="text-xs text-gray-400">
+            {searchMode === 'smart' ? 'AI-ranked results' : 'YouTube results'}
+          </span>
+        </div>
+
+        {error && (
+          <div role="alert" className="mb-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {error}
+          </div>
+        )}
 
         {/* Results meta + filters */}
         {allSearchResults.length > 0 && (
@@ -199,20 +233,6 @@ function NewProjectPageContent() {
                 <SlidersHorizontal className="h-3.5 w-3.5" />
                 Filters
               </button>
-              {/* Smart/Direct toggle */}
-              <div className="flex gap-0.5 bg-gray-100 rounded-md p-0.5">
-                {(['smart', 'direct'] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    onClick={() => setSearchMode(mode)}
-                    className={`px-2.5 py-1 rounded text-xs font-medium transition-colors capitalize
-                      ${searchMode === mode ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}
-                  >
-                    {mode}
-                  </button>
-                ))}
-              </div>
             </div>
           </div>
         )}

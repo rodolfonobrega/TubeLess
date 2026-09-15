@@ -142,6 +142,24 @@ class TestSmartSearch:
         assert "search_terms" in data
         assert data["search_terms"] == terms
 
+    def test_falls_back_to_raw_results_when_ranking_returns_empty(self, client):
+        terms = ["python tutorial"]
+        videos = [_make_video("v1"), _make_video("v2")]
+
+        with patch("app.api.v1.search.QueryExpansionService") as MockExp, \
+             patch("app.api.v1.search._ytdlp_search", AsyncMock(return_value=videos)), \
+             patch("app.api.v1.search.VideoRankingService") as MockRank:
+
+            MockExp.return_value.expand = AsyncMock(return_value=terms)
+            MockRank.return_value.rank = AsyncMock(return_value=[])
+
+            response = client.post(f"{SMART_URL}?q=python")
+
+        data = response.json()
+        assert response.status_code == 200
+        assert [video["id"] for video in data["videos"]] == ["v1", "v2"]
+        assert data["videos"][0]["pre_selected"] is True
+
     def test_deduplicates_videos_by_id(self, client):
         terms = ["term one here", "term two here"]
         # Same video from two search terms

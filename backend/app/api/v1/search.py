@@ -2,7 +2,9 @@
 
 import asyncio
 import logging
+import os
 import re
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -28,6 +30,20 @@ async def _ytdlp_search(query: str, max_results: int, dateafter: str | None = No
     import yt_dlp
 
     ydl_opts: dict = {"quiet": True, "no_warnings": True, "extract_flat": "in_playlist"}
+
+    # Cookies are optional, so a missing configured file must not make every
+    # search fail (this is common when running the backend in Docker).
+    cookies_file = os.environ.get("YTDLP_COOKIES_FILE")
+    cookies_browser = os.environ.get("YTDLP_COOKIES_BROWSER")
+    if cookies_file:
+        cookie_path = Path(cookies_file)
+        if cookie_path.is_file():
+            ydl_opts["cookiefile"] = str(cookie_path)
+        else:
+            logger.warning("Configured YTDLP_COOKIES_FILE does not exist: %s", cookie_path)
+    elif cookies_browser:
+        ydl_opts["cookiesfrombrowser"] = (cookies_browser,)
+
     if dateafter:
         ydl_opts["dateafter"] = dateafter
 
@@ -136,8 +152,9 @@ async def _smart_search(q: str, offset: int, limit: int) -> SearchResponse:
     # 3. Deduplicate by video id
     seen_ids: set[str] = set()
     all_videos: list[dict] = []
-    for term_results in results_per_term_result:
+    for term, term_results in zip(search_terms, results_per_term_result):
         if isinstance(term_results, Exception):
+            logger.warning("YouTube search failed for expanded term %r: %s", term, term_results)
             continue
         for video in term_results:
             if video["id"] and video["id"] not in seen_ids:
@@ -149,7 +166,26 @@ async def _smart_search(q: str, offset: int, limit: int) -> SearchResponse:
 
     # 4. LLM ranks and pre-selects
     ranking_service = VideoRankingService()
-    ranked_videos = await ranking_service.rank(q, all_videos, pre_select)
+    try:
+        ranked_videos = await ranking_service.rank(q, all_videos, pre_select)
+    except Exception as exc:
+        # A search should still be usable if an optional ranking provider is
+        # unavailable or returns an unexpected payload.
+        logger.warning("Video ranking failed for %r, returning raw results: %s", q, exc)
+        ranked_videos = []
+
+    # The ranking prompt may return no qualifying items. An empty search page
+    # is not useful, so keep the YouTube results as a safe fallback.
+    if not ranked_videos:
+        ranked_videos = [
+            {
+                **video,
+                "relevance_score": 5,
+                "relevance_reason": "",
+                "pre_selected": index < pre_select,
+            }
+            for index, video in enumerate(all_videos)
+        ]
 
     # Smart mode returns all ranked videos (pagination less useful after LLM ranking)
     total = len(ranked_videos)
