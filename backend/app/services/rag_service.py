@@ -3,6 +3,7 @@
 import logging
 import uuid
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +15,14 @@ from app.services.vector_service import SearchResult, VectorService
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SummaryItem:
+    """A video summary and the source metadata used to cite it."""
+
+    content: str
+    source: dict[str, Any]
 
 
 class RAGService:
@@ -82,14 +91,15 @@ class RAGService:
 
     async def _get_summaries_context(
         self, project_id: uuid.UUID, video_ids: list[str] | None = None
-    ) -> str:
+    ) -> list[SummaryItem]:
         """Fetch all video summaries for the project to enrich RAG context."""
         from sqlalchemy import text as sa_text
         try:
             if video_ids:
                 result = await self.session.execute(
                     sa_text("""
-                        SELECT vs.content, COALESCE(v.title, v.youtube_video_id) as video_label
+                        SELECT vs.content, COALESCE(v.title, v.youtube_video_id) as video_label,
+                               v.youtube_video_id
                         FROM video_summaries vs
                         JOIN videos v ON vs.video_id = v.id
                         WHERE v.project_id = :project_id
@@ -101,7 +111,8 @@ class RAGService:
             else:
                 result = await self.session.execute(
                     sa_text("""
-                        SELECT vs.content, COALESCE(v.title, v.youtube_video_id) as video_label
+                        SELECT vs.content, COALESCE(v.title, v.youtube_video_id) as video_label,
+                               v.youtube_video_id
                         FROM video_summaries vs
                         JOIN videos v ON vs.video_id = v.id
                         WHERE v.project_id = :project_id
@@ -111,12 +122,32 @@ class RAGService:
                 )
             rows = result.fetchall()
             if not rows:
-                return ""
-            parts = [f"[Resumo — '{row[1]}']:\n{row[0]}" for row in rows]
-            return "\n\n".join(parts)
+                return []
+
+            items = []
+            for row in rows:
+                content = row[0] or ""
+                video_title = row[1] or row[2]
+                video_id = row[2]
+                items.append(
+                    SummaryItem(
+                        content=content,
+                        source={
+                            "video_id": video_id,
+                            "video_title": video_title,
+                            "timestamp": None,
+                            "youtube_url": self._youtube_url(video_id, None),
+                            "source_type": "summary",
+                            "snippet": content[:200] + "...",
+                            "similarity": 0.0,
+                            "rerank_score": None,
+                        },
+                    )
+                )
+            return items
         except Exception as e:
             logger.warning(f"Could not fetch summaries: {e}")
-            return ""
+            return []
 
     # -----------------------------------------------------------------
     # Public API
@@ -155,19 +186,7 @@ class RAGService:
         context = self._build_context(results, summaries_context)
         answer = await self._generate_answer(question, context, history)
 
-        sources = [
-            {
-                "video_id": r.video_youtube_id,
-                "video_title": r.video_title or r.video_youtube_id,
-                "timestamp": float(r.chunk.start_time) if r.chunk.start_time is not None else None,
-                "youtube_url": self._youtube_url(r.video_youtube_id, r.chunk.start_time),
-                "source_type": getattr(r.chunk, "source_type", "transcript"),
-                "snippet": r.chunk.content[:200] + "...",
-                "similarity": float(r.similarity),
-                "rerank_score": float(r.rerank_score) if r.rerank_score is not None else None,
-            }
-            for r in results
-        ]
+        sources = self._build_sources(results, summaries_context)
 
         return {"answer": answer, "sources": sources}
 
@@ -212,21 +231,7 @@ class RAGService:
             yield chunk
 
         # Yield sources as final item
-        yield {
-            "__sources__": [
-                {
-                    "video_id": r.video_youtube_id,
-                    "video_title": r.video_title or r.video_youtube_id,
-                    "timestamp": float(r.chunk.start_time) if r.chunk.start_time is not None else None,
-                    "youtube_url": self._youtube_url(r.video_youtube_id, r.chunk.start_time),
-                    "source_type": getattr(r.chunk, "source_type", "transcript"),
-                    "snippet": r.chunk.content[:200] + "...",
-                    "similarity": float(r.similarity),
-                    "rerank_score": float(r.rerank_score) if r.rerank_score is not None else None,
-                }
-                for r in results
-            ]
-        }
+        yield {"__sources__": self._build_sources(results, summaries_context)}
 
     # -----------------------------------------------------------------
     # Query rewriting
@@ -269,7 +274,48 @@ Return ONLY the rewritten query, nothing else."""
     # Context building
     # -----------------------------------------------------------------
 
-    def _build_context(self, results: list[SearchResult], summaries_context: str = "") -> str:
+    def _should_include_summaries(
+        self, results: list[SearchResult], summaries_context: list[SummaryItem]
+    ) -> bool:
+        """Use summaries when retrieval is empty or only weakly relevant."""
+        if not summaries_context:
+            return False
+
+        max_similarity = max(
+            (r.similarity for r in results if r.similarity is not None),
+            default=0.0,
+        )
+        return not results or max_similarity < 0.5
+
+    def _build_sources(
+        self, results: list[SearchResult], summaries_context: list[SummaryItem]
+    ) -> list[dict[str, Any]]:
+        """Build source metadata in the same order as citations in the prompt."""
+        sources = (
+            [item.source for item in summaries_context]
+            if self._should_include_summaries(results, summaries_context)
+            else []
+        )
+        sources.extend(
+            {
+                "video_id": r.video_youtube_id,
+                "video_title": r.video_title or r.video_youtube_id,
+                "timestamp": float(r.chunk.start_time) if r.chunk.start_time is not None else None,
+                "youtube_url": self._youtube_url(r.video_youtube_id, r.chunk.start_time),
+                "source_type": getattr(r.chunk, "source_type", "transcript"),
+                "snippet": r.chunk.content[:200] + "...",
+                "similarity": float(r.similarity),
+                "rerank_score": float(r.rerank_score) if r.rerank_score is not None else None,
+            }
+            for r in results
+        )
+        return sources
+
+    def _build_context(
+        self,
+        results: list[SearchResult],
+        summaries_context: list[SummaryItem] | str = "",
+    ) -> str:
         """Build context string from search results and video summaries.
 
         Summaries are only injected when the highest chunk similarity is low,
@@ -277,26 +323,44 @@ Return ONLY the rewritten query, nothing else."""
         """
         context_parts = []
 
-        max_similarity = max(
-            (r.similarity for r in results if r.similarity is not None),
-            default=1.0,
+        if isinstance(summaries_context, str):
+            summary_items: list[SummaryItem] = []
+            legacy_summary_text = summaries_context
+        else:
+            summary_items = summaries_context
+            legacy_summary_text = ""
+
+        # Include summaries when vector/FTS retrieval is empty. Previously the
+        # empty-result case used default similarity=1.0, so summaries existed
+        # but were silently omitted and the LLM saw no sources.
+        if self._should_include_summaries(results, summary_items):
+            summary_parts = [
+                f"[Fonte {index}] Resumo do vídeo '{item.source['video_title']}':\n{item.content}"
+                for index, item in enumerate(summary_items, start=1)
+            ]
+            context_parts.append("=== Resumos dos Vídeos ===\n" + "\n\n".join(summary_parts) + "\n")
+        elif legacy_summary_text and results:
+            # Keep compatibility for callers that still pass a prebuilt string.
+            context_parts.append(f"=== Resumos dos Vídeos ===\n{legacy_summary_text}\n")
+
+        source_offset = (
+            len(summary_items)
+            if self._should_include_summaries(results, summary_items)
+            else 0
         )
 
-        # Only include summaries if max chunk similarity is low (broad question)
-        if summaries_context and max_similarity < 0.5:
-            context_parts.append(f"=== Resumos dos Vídeos ===\n{summaries_context}\n")
-
         for i, result in enumerate(results):
+            source_number = i + 1 + source_offset
             source_type = getattr(result.chunk, "source_type", "transcript")
             timestamp = result.chunk.start_time
             video_label = result.video_title or result.video_youtube_id or "vídeo"
 
             if source_type == "comment":
-                label = f"[Fonte {i+1}] Comentários do vídeo '{video_label}'"
+                label = f"[Fonte {source_number}] Comentários do vídeo '{video_label}'"
             elif timestamp:
-                label = f"[Fonte {i+1}] Transcrição de '{video_label}' ({int(timestamp)}s)"
+                label = f"[Fonte {source_number}] Transcrição de '{video_label}' ({int(timestamp)}s)"
             else:
-                label = f"[Fonte {i+1}] Transcrição de '{video_label}'"
+                label = f"[Fonte {source_number}] Transcrição de '{video_label}'"
 
             context_parts.append(f"{label}:\n{result.chunk.content}\n")
 
@@ -315,7 +379,8 @@ Return ONLY the rewritten query, nothing else."""
         system = (
             "Você é um assistente que responde perguntas com base em transcrições e comentários de vídeos do YouTube. "
             "Responda em português. Sempre cite as fontes usando [Fonte N] ao referenciar informações específicas. "
-            "Se houver informações conflitantes entre as fontes, mencione isso explicitamente."
+            "Se houver informações conflitantes entre as fontes, mencione isso explicitamente. "
+            "Use somente as fontes fornecidas no contexto e nunca peça ao usuário para reenviá-las."
         )
         prompt = f"""Responda a pergunta com base nas seguintes fontes dos vídeos.
 

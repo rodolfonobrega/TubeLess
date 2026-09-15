@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.services.rag_service import RAGService
+from app.services.rag_service import RAGService, SummaryItem
 from app.services.vector_service import SearchResult
 from tests.conftest import make_llm_response
 
@@ -114,6 +114,21 @@ class TestBuildContext:
         svc = _make_rag_service()
         ctx = svc._build_context([])
         assert ctx == ""
+
+    def test_summary_fallback_is_numbered_as_a_source(self):
+        svc = _make_rag_service()
+        summaries = [
+            SummaryItem(
+                content="Confira paredes, teto e instalações.",
+                source={"video_title": "Vistoria do apartamento"},
+            )
+        ]
+
+        ctx = svc._build_context([], summaries)
+
+        assert "[Fonte 1]" in ctx
+        assert "Vistoria do apartamento" in ctx
+        assert "instalações" in ctx
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +266,37 @@ class TestQuery:
         assert result["answer"] == "The answer is X."
         assert len(result["sources"]) == 1
         assert result["sources"][0]["video_title"] == "Test Video"
+
+    @pytest.mark.asyncio
+    async def test_uses_summary_as_source_when_retrieval_is_empty(self):
+        svc = _make_rag_service()
+        svc.vector_service.hybrid_search = AsyncMock(return_value=[])
+        svc.llm_service.generate_embedding = AsyncMock(return_value=[0.1] * 1536)
+        svc.llm_service.completion = AsyncMock(return_value=make_llm_response("Resposta [Fonte 1]."))
+        svc._get_summaries_context = AsyncMock(
+            return_value=[
+                SummaryItem(
+                    content="Confira paredes, teto e instalações.",
+                    source={
+                        "video_id": "abc123",
+                        "video_title": "Vistoria do apartamento",
+                        "timestamp": None,
+                        "youtube_url": "https://www.youtube.com/watch?v=abc123",
+                        "source_type": "summary",
+                        "snippet": "Confira paredes, teto e instalações.",
+                        "similarity": 0.0,
+                        "rerank_score": None,
+                    },
+                )
+            ]
+        )
+
+        import uuid
+        result = await svc.query("question", project_id=uuid.uuid4())
+
+        assert result["answer"] == "Resposta [Fonte 1]."
+        assert len(result["sources"]) == 1
+        assert result["sources"][0]["source_type"] == "summary"
 
     @pytest.mark.asyncio
     async def test_sources_include_youtube_url(self):
